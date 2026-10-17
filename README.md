@@ -7,6 +7,9 @@ The goal was to practice the full blue-team loop: **collect → attack → inves
 ![SOC Lab dashboard](images/04-attacks/52.png)
 
 ---
+## Related project
+
+- **[soc-detection-validator](https://github.com/fogaccacbr/soc-detection-validator)** — a Python tool that automatically re-runs these attacks and checks that each detection rule still fires, producing a coverage report. Turns the manual "attack → check Kibana" loop into one command.
 
 ## Highlights
 
