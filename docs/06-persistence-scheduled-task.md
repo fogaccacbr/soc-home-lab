@@ -26,7 +26,22 @@ event.code: 4698
 
 ![4698 events in Discover](../images/04-attacks/33.png)
 
-> **SOC takeaway:** Event 4698 is high-value for persistence hunting. Tasks created outside of patch windows, with generic names like "Updater", running as SYSTEM, and originating from a remote logon, deserve a close look. Writing a dedicated rule for 4698 is on my [next-steps list](../README.md#next-steps).
+> **SOC takeaway:** Event 4698 is high-value for persistence hunting. Tasks created outside of patch windows, with generic names like "Updater", running as SYSTEM, and originating from a remote logon, deserve a close look.
+
+## Detection rule
+
+At first this attack was only covered by a hunting query: someone had to go look. My [detection validator](https://github.com/fogaccacbr/soc-detection-validator#gap-found-closed-and-proved) flagged it as the one technique in the lab with no alert, so I wrote a rule for it:
+
+```kql
+event.code:"4698" or
+(process.name:"schtasks.exe" and process.args:("/create" or "/Create" or "-create"))
+```
+
+It combines the Windows audit event with the `schtasks.exe` process creation from endpoint telemetry, so it still fires if one of the two sources is missing.
+
+![Rule definition in Kibana](../images/04-attacks/56.png)
+
+Re-running the attack through the validator, the rule fired in ~31 seconds. Full rule details: [detections/README.md](../detections/README.md#4-scheduled-task-created-possible-persistence).
 
 ---
 
