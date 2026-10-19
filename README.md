@@ -1,133 +1,99 @@
-# Detection Rules
+# SOC Home Lab: Detecting Attacks with Elastic SIEM
 
-Four custom detection rules built in Kibana (Elastic Security) and validated by re-running each attack against the lab. Each rule is explained below, and the rules themselves are published in two formats (see [Rule files](#rule-files)): the native Kibana export and vendor-neutral Sigma versions.
+A self-built Security Operations Center (SOC) lab where I deployed an Elastic Stack SIEM, onboarded a Windows 10 endpoint with Sysmon and Elastic Agent, attacked it from a Parrot OS machine, and wrote custom detection rules for what I saw in the logs.
 
-All rules run against the `logs-*` index pattern.
+The goal was to practice the full blue-team loop: **collect → attack → investigate → detect → visualize**.
+
+![SOC Lab dashboard](images/04-attacks/52.png)
 
 ---
+## Related project
 
-## 1. Brute-force SMB success
+- **[soc-detection-validator](https://github.com/fogaccacbr/soc-detection-validator)** — a Python tool that automatically re-runs these attacks and checks that each detection rule still fires, producing a coverage report. Turns the manual "attack → check Kibana" loop into one command.
 
-- **Type:** Event Correlation (EQL sequence)
-- **Severity:** High · **Risk score:** 73
-- **MITRE:** [T1110.001](https://attack.mitre.org/techniques/T1110/001/) Password Guessing
-- **Idea:** several failed logons followed by a success, same user and source IP, inside one minute.
+## Highlights
 
-```eql
-sequence by winlog.event_data.TargetUserName, source.ip with maxspan=1m
-  [authentication where event.code == "4625"]
-  [authentication where event.code == "4625"]
-  [authentication where event.code == "4625"]
-  [authentication where event.code == "4625"]
-  [authentication where event.code == "4624" and winlog.logon.type == "Network"]
+- Deployed a **single-node Elastic Stack** (Elasticsearch, Kibana, Fleet Server) on Ubuntu Server, hardened with UFW.
+- Onboarded a **Windows 10 endpoint** with advanced audit policy, PowerShell logging, **Sysmon (sysmon-modular)** and **Elastic Agent** managed by Fleet.
+- Simulated attacks from **Parrot OS** mapped to **MITRE ATT&CK**: reconnaissance, SMB enumeration, brute force, persistence and data collection.
+- Investigated each attack in **Kibana Discover** using Windows Security event IDs (4624, 4625, 4698, 5140, 5145, 5152).
+- Wrote **4 custom detection rules** (EQL sequence, custom queries, threshold) and validated each by re-running the attack, automatically with [soc-detection-validator](https://github.com/fogaccacbr/soc-detection-validator).
+- Built a **dashboard** that reconstructs the attack timeline from a single source IP.
+
+## Lab Architecture
+
+```mermaid
+flowchart LR
+    subgraph LAB["Isolated lab network: 192.168.158.0/24 (no gateway)"]
+        P["Parrot OS<br/>Attacker<br/>192.168.158.30"]
+        W["Windows 10<br/>Target + Sysmon + Elastic Agent<br/>192.168.158.20"]
+        S["Ubuntu Server 'siem-server'<br/>Elasticsearch · Kibana · Fleet Server<br/>192.168.158.10"]
+    end
+    P -- "attacks (nmap, SMB, RPC)" --> W
+    W -- "logs via Elastic Agent (8220 / 9200)" --> S
+    H["Host PC (Windows)"] -- "SSH / Kibana 5601" --> S
 ```
 
-**Why it works:** a single 4625 is noise. Four or more failures immediately followed by a successful *network* logon (type 3) from the same origin is the signature of a successful guessing attack. Grouping by user + source IP keeps unrelated failures across the environment from correlating by accident.
+Each VM also has a separate NAT adapter used only for updates and downloads, so lab traffic stays on the isolated network.
 
-**Validation:** re-ran the brute force; the alert fired within ~2 minutes. See [docs/05-brute-force.md](../docs/05-brute-force.md).
+| Machine | Role | OS | Lab IP |
+|---|---|---|---|
+| `siem-server` | SIEM (Elasticsearch, Kibana, Fleet Server) | Ubuntu Server 26.04 LTS: 4 vCPU, 8 GB RAM, 60 GB disk | 192.168.158.10 |
+| `DESKTOP-C4JT052` | Target / log source | Windows 10 (build 19041) | 192.168.158.20 |
+| `parrot` | Attacker | Parrot Security OS | 192.168.158.30 |
 
----
+Hypervisor: VMware Workstation. Elastic Stack version: 9.5.
 
-## 2. Sensitive file access through SMB (possible exfiltration)
+## Attacks and Detections
 
-- **Type:** Custom query
-- **Severity:** Critical · **Risk score:** 99
-- **MITRE:** [T1039](https://attack.mitre.org/techniques/T1039/) Data from Network Shared Drive
-- **Idea:** any read of the decoy file is suspicious by definition.
+| # | Technique | MITRE ATT&CK | Key evidence | Detection |
+|---|---|---|---|---|
+| 1 | Port scanning | [T1046](https://attack.mitre.org/techniques/T1046/) Network Service Discovery | Event **5152** (WFP packet drop) from attacker IP | Hunting query |
+| 2 | SMB / RPC null-session enumeration | [T1135](https://attack.mitre.org/techniques/T1135/) Network Share Discovery, [T1087](https://attack.mitre.org/techniques/T1087/) Account Discovery | **4624** ANONYMOUS LOGON followed by **4625** with random username | Hunting query |
+| 3 | SMB password brute force | [T1110.001](https://attack.mitre.org/techniques/T1110/001/) Password Guessing | Burst of **4625** then **4624** logon type 3 | ✅ [EQL sequence rule](detections/README.md#1-brute-force-smb-success) |
+| 4 | Remote execution + persistence via scheduled task | [T1053.005](https://attack.mitre.org/techniques/T1053/005/) Scheduled Task, [T1021.002](https://attack.mitre.org/techniques/T1021/002/) SMB/Admin Shares | Event **4698** (task "Updater" running as SYSTEM) | ✅ [Scheduled-task rule](detections/README.md#4-scheduled-task-created-possible-persistence) |
+| 5 | Sensitive file read from a share | [T1039](https://attack.mitre.org/techniques/T1039/) Data from Network Shared Drive | Events **5140 / 5145** on `users_passwords.txt` | ✅ [Honey-file rule](detections/README.md#2-sensitive-file-access-through-smb-possible-exfiltration) |
+| 6 | Automated share crawling | [T1039](https://attack.mitre.org/techniques/T1039/), [T1119](https://attack.mitre.org/techniques/T1119/) Automated Collection | High volume of **5145** from one IP | ✅ [Threshold rule](detections/README.md#3-mass-file-scanning-via-smb-potential-automated-collection) |
 
-```kql
-event.code: "5145" and winlog.event_data.ShareName: "\\\\*\\Finances"
-  and winlog.event_data.RelativeTargetName: "users_passwords.txt"
-```
+## Documentation
 
-**Why it works:** `users_passwords.txt` in the `Finances` share is a **honey token** — no legitimate user has any reason to open it, so a match is almost certainly malicious. No sequence is needed; a single event is enough. This gives a very low false-positive rate.
+Step-by-step write-ups, in the order I built the lab:
 
-**Validation:** read the file from Parrot; the Critical alert fired within ~1 minute. See [docs/07-collection-and-exfiltration.md](../docs/07-collection-and-exfiltration.md).
+1. [SIEM Server: Ubuntu + Elastic Stack](docs/01-siem-server.md)
+2. [Windows 10 Target: Auditing, Sysmon and Elastic Agent](docs/02-windows-target.md)
+3. [Parrot OS Attacker](docs/03-parrot-attacker.md)
+4. [Reconnaissance and SMB Enumeration](docs/04-recon-and-smb-enumeration.md)
+5. [SMB Brute Force](docs/05-brute-force.md)
+6. [Persistence via Scheduled Task](docs/06-persistence-scheduled-task.md)
+7. [Collection and Exfiltration from SMB Shares](docs/07-collection-and-exfiltration.md)
+8. [Attack Detection Dashboard](docs/08-dashboard.md)
 
----
+Detection rule logic: [detections/README.md](detections/README.md)
 
-## 3. Mass file scanning via SMB (potential automated collection)
+## Skills Practiced
 
-- **Type:** Threshold
-- **Severity:** High
-- **MITRE:** [T1039](https://attack.mitre.org/techniques/T1039/) Data from Network Shared Drive · [T1119](https://attack.mitre.org/techniques/T1119/) Automated Collection
-- **Idea:** one IP touching many files in a short window looks like an automated crawl, not a human.
+- SIEM deployment and configuration (Elasticsearch, Kibana, Fleet, Elastic Agent, Elastic Defend)
+- Windows logging: Advanced Audit Policy, process command-line auditing, PowerShell logging, Sysmon
+- Network segmentation and host firewalling (UFW, Windows Defender Firewall)
+- Offensive tooling for emulation: nmap, enum4linux-ng, smbclient, rpcclient, NetExec
+- Log analysis with KQL in Kibana Discover
+- Detection engineering with EQL sequences, custom queries and threshold rules
+- MITRE ATT&CK mapping and SOC-style investigation write-ups
 
-```
-Index:     logs-*
-Query:     event.code: "5145"
-Group by:  source.ip
-Threshold: >= 20 events
-Window:    2 minutes (runs every 1m, 1m additional look-back)
-```
+## What I Learned
 
-**Why it works:** a person opens a file or two; a share-crawling tool opens dozens in seconds. Counting 5145 events per source IP catches the smash-and-grab case that the single-file honey rule above would miss.
+- **Logs only exist if you turn them on.** Firewall drops (5152) and file-share access (5140/5145) are invisible until the matching `auditpol` subcategories are enabled.
+- **Sequences beat single events.** One failed logon is noise; several failures followed by a success from the same IP within a minute is a high-confidence brute-force signal.
+- **Honey files are cheap, high-fidelity detections.** A decoy file that no legitimate user should ever open produces almost no false positives.
+- **Defaults matter.** Windows blocked anonymous sessions and remote execution for local non-built-in admins (UAC remote restrictions) out of the box. I had to weaken both on purpose to make the attacks work.
 
-**Validation:** ran an automated share crawl from Parrot; the alert fired. See [docs/07-collection-and-exfiltration.md](../docs/07-collection-and-exfiltration.md).
+## Next Steps
 
----
+- [ ] Add a Raspberry Pi as a Linux log source
+- [x] Write a detection rule for scheduled-task persistence (4698)
+- [x] Export the rules as `.ndjson` and add [Sigma](https://github.com/SigmaHQ/sigma) equivalents
+- [ ] Emulate credential dumping and lateral movement (RDP)
 
-## 4. Scheduled task created (possible persistence)
+## Disclaimer
 
-- **Type:** Custom query (KQL) · runs every 1 minute, 5 minute look-back
-- **Severity:** Medium · **Risk score:** 47
-- **MITRE:** [T1053.005](https://attack.mitre.org/techniques/T1053/005/) Scheduled Task/Job: Scheduled Task (tactic: Persistence)
-- **Idea:** alert whenever a scheduled task is created, from either of two independent log sources.
-
-```kql
-event.code:"4698" or
-(process.name:"schtasks.exe" and process.args:("/create" or "/Create" or "-create"))
-```
-
-**Why it works:** the two halves cover each other's blind spots.
-
-- **Event 4698** is Windows' own record that a task was registered. It fires however the task was made (`schtasks`, PowerShell `Register-ScheduledTask`, the COM API), but only if *Other Object Access Events* auditing is on.
-- **The `schtasks.exe` process** with a create argument comes from the endpoint telemetry (Sysmon / Elastic Defend). It still fires if the audit policy is changed, and it records *who* ran the command and with what arguments. The argument list matches the case and dash variants an attacker might use.
-
-**Tuning:** severity is Medium on purpose. Software installers and admins create tasks legitimately, so this is a triage signal, not a verdict. Good next filters are tasks running as `SYSTEM`, tasks whose action points to a writable path like `C:\Windows\Temp`, and creations coming from a remote (type 3) logon.
-
-**Validation:** this rule closed a gap that the [soc-detection-validator](https://github.com/fogaccacbr/soc-detection-validator#gap-found-closed-and-proved) found. Before it existed, the scheduled-task scenario ran but produced no alert. After it was added, the validator reported 4/4 techniques detected, with this rule firing in ~31 seconds. See [docs/06-persistence-scheduled-task.md](../docs/06-persistence-scheduled-task.md).
-
-![Rule definition in Kibana](../images/04-attacks/56.png)
-
----
-
-## Rule files
-
-| Rule | Kibana | Sigma |
-|---|---|---|
-| 1. Brute-force SMB success | [`elastic/rules_export.ndjson`](elastic/rules_export.ndjson) | [`win_security_smb_bruteforce_success.yml`](sigma/win_security_smb_bruteforce_success.yml) |
-| 2. Sensitive file access (honey token) | same file | [`win_security_smb_honeytoken_access.yml`](sigma/win_security_smb_honeytoken_access.yml) |
-| 3. Mass file scanning via SMB | same file | [`win_security_smb_mass_file_access.yml`](sigma/win_security_smb_mass_file_access.yml) |
-| 4. Scheduled task created | same file | [`win_security_scheduled_task_created.yml`](sigma/win_security_scheduled_task_created.yml) + [`proc_creation_win_schtasks_create.yml`](sigma/proc_creation_win_schtasks_create.yml) |
-
-- **Kibana:** import `elastic/rules_export.ndjson` via *Security → Rules → Import rules*.
-- **Sigma:** [Sigma](https://github.com/SigmaHQ/sigma) is a vendor-neutral rule format that converts to Splunk, Sentinel, QRadar and others. All files pass `sigma check`. To convert them back to Elastic:
-
-  ```bash
-  pip install sigma-cli
-  sigma plugin install elasticsearch
-  sigma convert -t eql -p ecs_windows detections/sigma/
-  ```
-
-**Translation notes**
-
-- **Threshold and sequence → Sigma correlations.** Rules 1 and 3 use Sigma correlation rules (`event_count`, `temporal_ordered`). Their base rules are `level: informational` building blocks that aren't meant to alert on their own.
-- **Rule 4 is split in two.** A Sigma rule declares exactly one log source, and this rule spans two: the Security log (4698) and process creation (`schtasks.exe`).
-- **Case-insensitive by default.** In Sigma, `/create` already matches `/Create` and `/CREATE`, so the explicit variants are not needed.
-- **Known limitation.** Rule 1 chains two correlations (4 failures, *then* a success). The Sigma spec supports this, but pySigma's Elasticsearch backend can't yet convert chained correlations to valid EQL. The Sigma file documents the logic portably; the EQL above is the working Elastic implementation.
-
----
-
-## Prerequisites: auditing
-
-None of these rules fire unless the matching Windows audit subcategories are enabled on the endpoint:
-
-| Rule | Needs |
-|---|---|
-| Brute force | Logon/Logoff auditing (4624/4625) — on by default, plus process command-line auditing for context |
-| Honey file & mass scanning | `File Share` and `Detailed File Share` success auditing (5140/5145) |
-| Scheduled task | `Other Object Access Events` success auditing (4698), or process creation telemetry from Sysmon / Elastic Defend |
-| (Recon, for context) | `Filtering Platform Packet Drop` failure auditing (5152) |
-
-> **Lesson:** detection engineering starts at the source. A perfect rule matches nothing if the log it depends on was never generated.
+Everything here was done in an isolated lab on machines I own. All credentials shown (`1234`, `SuperSecret123`, and so on) are intentionally weak test values created for this exercise. Do not use these techniques against systems you are not authorized to test.
