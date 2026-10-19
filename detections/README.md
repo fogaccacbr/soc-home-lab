@@ -1,6 +1,6 @@
 # Detection Rules
 
-Four custom detection rules built in Kibana (Elastic Security) and validated by re-running each attack against the lab. They are written out here as logic/pseudocode; exporting them as `.ndjson` and adding Sigma equivalents is on the [next-steps list](../README.md#next-steps).
+Four custom detection rules built in Kibana (Elastic Security) and validated by re-running each attack against the lab. Each rule is explained below, and the rules themselves are published in two formats (see [Rule files](#rule-files)): the native Kibana export and vendor-neutral Sigma versions.
 
 All rules run against the `logs-*` index pattern.
 
@@ -15,8 +15,11 @@ All rules run against the `logs-*` index pattern.
 
 ```eql
 sequence by winlog.event_data.TargetUserName, source.ip with maxspan=1m
-  [authentication where event.code == "4625"] with runs=4
-  [authentication where event.code == "4624" and winlog.logon.type == "3"]
+  [authentication where event.code == "4625"]
+  [authentication where event.code == "4625"]
+  [authentication where event.code == "4625"]
+  [authentication where event.code == "4625"]
+  [authentication where event.code == "4624" and winlog.logon.type == "Network"]
 ```
 
 **Why it works:** a single 4625 is noise. Four or more failures immediately followed by a successful *network* logon (type 3) from the same origin is the signature of a successful guessing attack. Grouping by user + source IP keeps unrelated failures across the environment from correlating by accident.
@@ -55,7 +58,7 @@ Index:     logs-*
 Query:     event.code: "5145"
 Group by:  source.ip
 Threshold: >= 20 events
-Window:    per 5 minutes
+Window:    2 minutes (runs every 1m, 1m additional look-back)
 ```
 
 **Why it works:** a person opens a file or two; a share-crawling tool opens dozens in seconds. Counting 5145 events per source IP catches the smash-and-grab case that the single-file honey rule above would miss.
@@ -86,6 +89,33 @@ event.code:"4698" or
 **Validation:** this rule closed a gap that the [soc-detection-validator](https://github.com/fogaccacbr/soc-detection-validator#gap-found-closed-and-proved) found. Before it existed, the scheduled-task scenario ran but produced no alert. After it was added, the validator reported 4/4 techniques detected, with this rule firing in ~31 seconds. See [docs/06-persistence-scheduled-task.md](../docs/06-persistence-scheduled-task.md).
 
 ![Rule definition in Kibana](../images/04-attacks/56.png)
+
+---
+
+## Rule files
+
+| Rule | Kibana | Sigma |
+|---|---|---|
+| 1. Brute-force SMB success | [`elastic/rules_export.ndjson`](elastic/rules_export.ndjson) | [`win_security_smb_bruteforce_success.yml`](sigma/win_security_smb_bruteforce_success.yml) |
+| 2. Sensitive file access (honey token) | same file | [`win_security_smb_honeytoken_access.yml`](sigma/win_security_smb_honeytoken_access.yml) |
+| 3. Mass file scanning via SMB | same file | [`win_security_smb_mass_file_access.yml`](sigma/win_security_smb_mass_file_access.yml) |
+| 4. Scheduled task created | same file | [`win_security_scheduled_task_created.yml`](sigma/win_security_scheduled_task_created.yml) + [`proc_creation_win_schtasks_create.yml`](sigma/proc_creation_win_schtasks_create.yml) |
+
+- **Kibana:** import `elastic/rules_export.ndjson` via *Security → Rules → Import rules*.
+- **Sigma:** [Sigma](https://github.com/SigmaHQ/sigma) is a vendor-neutral rule format that converts to Splunk, Sentinel, QRadar and others. All files pass `sigma check`. To convert them back to Elastic:
+
+  ```bash
+  pip install sigma-cli
+  sigma plugin install elasticsearch
+  sigma convert -t eql -p ecs_windows detections/sigma/
+  ```
+
+**Translation notes**
+
+- **Threshold and sequence → Sigma correlations.** Rules 1 and 3 use Sigma correlation rules (`event_count`, `temporal_ordered`). Their base rules are `level: informational` building blocks that aren't meant to alert on their own.
+- **Rule 4 is split in two.** A Sigma rule declares exactly one log source, and this rule spans two: the Security log (4698) and process creation (`schtasks.exe`).
+- **Case-insensitive by default.** In Sigma, `/create` already matches `/Create` and `/CREATE`, so the explicit variants are not needed.
+- **Known limitation.** Rule 1 chains two correlations (4 failures, *then* a success). The Sigma spec supports this, but pySigma's Elasticsearch backend can't yet convert chained correlations to valid EQL. The Sigma file documents the logic portably; the EQL above is the working Elastic implementation.
 
 ---
 

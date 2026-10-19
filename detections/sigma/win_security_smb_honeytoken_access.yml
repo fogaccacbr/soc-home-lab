@@ -1,0 +1,23 @@
+title: Sensitive File Access Through SMB (Honey Token)
+id: ffa9f271-6220-4251-ba23-6f163c2ec587
+status: experimental
+description: Detects reading of users_passwords.txt in the Finances share, a honey token/tripwire used to identify unauthorized access to sensitive data. Any access is suspicious since no legitimate user needs this file.
+author: Eduardo Fogaça
+date: 2026-10-18
+tags:
+    - attack.collection
+    - attack.t1039
+    - attack.exfiltration
+logsource:
+    product: windows
+    service: security
+    definition: 'Requires "Audit Detailed File Share" enabled'
+detection:
+    selection:
+        EventID: 5145
+        ShareName|endswith: '\Finances'
+        RelativeTargetName: 'users_passwords.txt'
+    condition: selection
+falsepositives:
+    - None expected (honey token) - except admins/AV touching the file
+level: critical

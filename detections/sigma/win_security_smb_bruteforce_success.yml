@@ -1,0 +1,87 @@
+title: Failed Logon
+id: c9e0eac9-1564-4cbd-8612-3f07041d6e71
+name: failed_logon
+status: experimental
+description: Base rule - an account failed to log on (Event 4625).
+author: Eduardo Fogaça
+date: 2026-10-18
+tags:
+    - attack.credential-access
+    - attack.t1110
+    - attack.t1110.001
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4625
+    condition: selection
+falsepositives:
+    - Users mistyping passwords (building block, not an alert)
+level: informational
+---
+title: Successful Network Logon
+id: 429c4472-70e1-4d73-95ac-549fb505ab63
+name: successful_network_logon
+status: experimental
+description: Base rule - successful network logon (Event 4624, LogonType 3), e.g. over SMB.
+author: Eduardo Fogaça
+date: 2026-10-18
+tags:
+    - attack.credential-access
+    - attack.t1110
+    - attack.t1110.001
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4624
+        LogonType: 3
+    condition: selection
+falsepositives:
+    - Normal network logons (building block, not an alert)
+level: informational
+---
+title: Multiple Failed Logons From Same Source
+id: ef53a267-5fb1-4e98-baa2-e11bdd40d295
+name: multiple_failed_logons
+status: experimental
+description: Intermediate correlation - 4 or more failed logons for the same account from the same IP within 1 minute.
+author: Eduardo Fogaça
+date: 2026-10-18
+correlation:
+    type: event_count
+    rules:
+        - failed_logon
+    group-by:
+        - TargetUserName
+        - IpAddress
+    timespan: 1m
+    condition:
+        gte: 4
+    generate: true
+level: medium
+---
+title: Brute-Force SMB Success
+id: 0a6319a6-1e78-42cc-bfa3-4b6f7946bc6d
+status: experimental
+description: Detects four or more failed authentication attempts (4625) followed by a successful network logon (4624) from the same IP address to the same account within one minute.
+author: Eduardo Fogaça
+date: 2026-10-18
+tags:
+    - attack.credential-access
+    - attack.t1110
+    - attack.t1110.001
+correlation:
+    type: temporal_ordered
+    rules:
+        - multiple_failed_logons
+        - successful_network_logon
+    group-by:
+        - TargetUserName
+        - IpAddress
+    timespan: 1m
+falsepositives:
+    - A user who forgot their password and finally got it right
+level: high

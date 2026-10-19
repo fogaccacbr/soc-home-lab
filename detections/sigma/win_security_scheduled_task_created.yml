@@ -1,0 +1,22 @@
+title: Scheduled Task Created (Possible Persistence) - Security Log
+id: 3c7db239-748e-433e-b9ac-b44a30f51348
+status: experimental
+description: Detects creation of a scheduled task via Windows Security Event 4698.
+author: Eduardo Fogaça
+date: 2026-10-18
+tags:
+    - attack.persistence
+    - attack.execution
+    - attack.t1053.005
+logsource:
+    product: windows
+    service: security
+    definition: 'Requires "Audit Other Object Access Events" enabled'
+detection:
+    selection:
+        EventID: 4698
+    condition: selection
+falsepositives:
+    - Software installers and updaters
+    - Legitimate administrative tasks
+level: medium

@@ -1,0 +1,46 @@
+title: SMB File Share Access Check
+id: 92b16110-4037-464b-8017-36456ee91d2f
+name: smb_file_share_access_check
+status: experimental
+description: Base rule - a network share object was checked for access (Event 5145). Used by the correlation rule below; not meant to alert on its own.
+author: Eduardo Fogaça
+date: 2026-10-18
+tags:
+    - attack.collection
+    - attack.t1039
+    - attack.t1119
+logsource:
+    product: windows
+    service: security
+    definition: 'Requires "Audit Detailed File Share" enabled'
+detection:
+    selection:
+        EventID: 5145
+    condition: selection
+falsepositives:
+    - Normal file server activity (this is a building block, not an alert)
+level: informational
+---
+title: Mass File Scanning via SMB (Potential Automated Collection)
+id: 261a2844-74a0-467b-9bfb-4cffad3a88a3
+status: experimental
+description: Detects a single source IP generating an abnormal volume of file access checks (Event 5145) within a short timeframe, indicating an automated tool enumerating or collecting data via SMB.
+author: Eduardo Fogaça
+date: 2026-10-18
+tags:
+    - attack.collection
+    - attack.t1039
+    - attack.t1119
+correlation:
+    type: event_count
+    rules:
+        - smb_file_share_access_check
+    group-by:
+        - IpAddress
+    timespan: 2m
+    condition:
+        gte: 20
+falsepositives:
+    - Backup software, antivirus scans or indexing services reading shares
+    - Users copying large folders
+level: high
